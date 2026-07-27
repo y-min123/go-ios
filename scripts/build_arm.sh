@@ -25,6 +25,11 @@ export GOOS=darwin
 export GOARCH=arm64
 export GOMODCACHE
 export GOCACHE
+# Build the root module standalone, ignoring the repo's go.work: its other
+# members (ncm/, restapi/) require a newer Go than build_intel.sh's pinned
+# Go 1.22.5 supports, and mixing workspace/non-workspace builds across
+# build_universal.sh's two slices would be inconsistent.
+export GOWORK=off
 
 echo "==> Building libgoios.dylib (arm64, min macOS 11)…"
 "${GO_BIN}" build -buildmode=c-shared -o "${DYLIB_OUTPUT}" ./bridge
@@ -34,7 +39,7 @@ cp "${DYLIB_OUTPUT}" "${BUILD_DIR}/libgoios.dylib"
 echo "==> Building ios CLI (arm64)…"
 # Force external linking so the Mach-O build version comes from the host linker,
 # which honors MACOSX_DEPLOYMENT_TARGET=11.0 on darwin/arm64.
-"${GO_BIN}" build -ldflags="-linkmode=external" -o "${IOS_OUTPUT}" ./main.go
+"${GO_BIN}" build -ldflags="-linkmode=external" -o "${IOS_OUTPUT}" .
 cp "${IOS_OUTPUT}" "${BUILD_DIR}/ios"
 
 echo "Artifacts written to ${BUILD_DIR}"

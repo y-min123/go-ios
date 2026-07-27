@@ -26,6 +26,11 @@ export GOOS=darwin
 export GOARCH=amd64
 export GOMODCACHE
 export GOCACHE
+# The repo root is a Go workspace whose other members (ncm/, restapi/) require
+# a newer Go than 10.15-compatible builds can use. Build the root module
+# standalone so GO_BIN can be pinned to Go 1.22.5 without the workspace's
+# `go` directive forcing a toolchain switch or rejecting the older toolchain.
+export GOWORK=off
 
 echo "==> Building libgoios.dylib (x86_64, min macOS 10.15)…"
 "${GO_BIN}" build -buildmode=c-shared -o "${DYLIB_OUTPUT}" ./bridge
@@ -37,7 +42,7 @@ fi
 echo "==> Building ios CLI (x86_64)…"
 # Force external linking so the Mach-O build version comes from the host linker,
 # which honors MACOSX_DEPLOYMENT_TARGET=10.15 on darwin/amd64.
-"${GO_BIN}" build -ldflags="-linkmode=external" -o "${IOS_OUTPUT}" ./main.go
+"${GO_BIN}" build -ldflags="-linkmode=external" -o "${IOS_OUTPUT}" .
 if [[ "${PUBLISH_SINGLE_ARCH_OUTPUT}" == "1" ]]; then
   cp "${IOS_OUTPUT}" "${BUILD_DIR}/ios"
 fi
