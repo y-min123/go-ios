@@ -209,7 +209,7 @@ func tunnelInfoMux(tm *TunnelManager) *http.ServeMux {
 
 func TunnelInfoForDevice(udid string, tunnelInfoHost string, tunnelInfoPort int) (Tunnel, error) {
 	c := http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 2 * time.Second,
 	}
 	res, err := c.Get(fmt.Sprintf("http://%s/tunnel/%s", net.JoinHostPort(tunnelInfoHost, fmt.Sprintf("%d", tunnelInfoPort)), udid))
 	if err != nil {
@@ -237,7 +237,7 @@ func TunnelInfoForDevice(udid string, tunnelInfoHost string, tunnelInfoPort int)
 
 func ListRunningTunnels(tunnelInfoHost string, tunnelInfoPort int) ([]Tunnel, error) {
 	c := http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 2 * time.Second,
 	}
 	res, err := c.Get(fmt.Sprintf("http://%s/tunnels", net.JoinHostPort(tunnelInfoHost, fmt.Sprintf("%d", tunnelInfoPort))))
 	if err != nil {

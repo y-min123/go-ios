@@ -139,6 +139,12 @@ func runDeviceStateCommand(ctx commandContext) {
 }
 
 func runLockdownCommand(ctx commandContext) {
+	if wifiConnectionsCommand, _ := ctx.Args.Bool("wifi-connections"); wifiConnectionsCommand {
+		state, _ := ctx.Args.String("--state")
+		runWifiConnectionsCommand(ctx.Device, state)
+		return
+	}
+
 	if get, _ := ctx.Args.Bool("get"); !get {
 		return
 	}
@@ -171,4 +177,36 @@ func runLockdownCommand(ctx commandContext) {
 
 func runSysmontapCommand(ctx commandContext) {
 	printSysmontapStats(ctx.Device)
+}
+
+func wifiConnectionsState(state string) (shouldSet bool, enabled bool, err error) {
+	switch state {
+	case "":
+		return false, false, nil
+	case "on":
+		return true, true, nil
+	case "off":
+		return true, false, nil
+	default:
+		return false, false, fmt.Errorf("invalid --state value %q: expected on or off", state)
+	}
+}
+
+func runWifiConnectionsCommand(device ios.DeviceEntry, state string) {
+	shouldSet, enabled, err := wifiConnectionsState(state)
+	exitIfError("failed parsing Wi-Fi connections state", err)
+
+	if shouldSet {
+		err = ios.SetWifiConnections(device, enabled)
+		exitIfError("failed setting Wi-Fi connections state", err)
+		return
+	}
+
+	enabled, err = ios.GetWifiConnections(device)
+	exitIfError("failed getting Wi-Fi connections state", err)
+	if JSONdisabled {
+		fmt.Printf("%t\n", enabled)
+	} else {
+		fmt.Println(convertToJSONString(map[string]bool{"EnableWifiConnections": enabled}))
+	}
 }

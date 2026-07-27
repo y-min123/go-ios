@@ -117,6 +117,7 @@ Usage:
   ios list [options] [--details]
   ios listen [options]
   ios lockdown get [<key>] [--domain=<domain>] [options]
+  ios lockdown wifi-connections [--state=<state>] [options]
   ios memlimitoff (--process=<processName>) [options]
   ios mobilegestalt <key>... [--plist] [options]
   ios pair [--p12file=<orgid>] [--password=<p12password>] [options]
@@ -351,6 +352,9 @@ The commands work as following:
     ios lockdown get [<key>] [--domain=<domain>] [options]             Query lockdown values. Without arguments returns all values. Specify a key to get a specific value.
                                                                        Use --domain to query from a specific domain (e.g., com.apple.disk_usage, com.apple.PurpleBuddy).
                                                                        Ex.: "ios lockdown get DeviceName", "ios lockdown get --domain=com.apple.PurpleBuddy"
+
+    ios lockdown wifi-connections [--state=<state>] [options]          Get or set lockdownd connections over Wi-Fi.
+                                                                       Use --state=on to enable or --state=off to disable.
 
     ios memlimitoff (--process=<processName>) [options]                Waives memory limit set by iOS (For instance a Broadcast Extension limit is 50 MB).
 

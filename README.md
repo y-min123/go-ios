@@ -30,6 +30,14 @@ Go-iOS is getting an experimental REST-API check it out [https://github.com/dani
 
    _Build Manual_: Install golang and run `go build`
 
+   To rebuild only the Intel slice for macOS 10.15 with Go 1.22.5 and merge it
+   with the arm64 slice from an existing universal binary:
+
+   ```bash
+   GO_BIN=/path/to/go1.22.5/bin/go \
+     ./scripts/build_catalina_universal.sh /path/to/current/universal/ios
+   ```
+
 2. All output as JSON so you can easily use go-iOS from any other programming language
 3. Everything is a module, you can use go-iOS in golang projects as a module dependency easily
 
@@ -119,6 +127,7 @@ Commands:
   list                       List connected devices.
   listen                     Listen for device connect/disconnect.
   lockdown get               Query lockdown values.
+  lockdown wifi-connections  Get or set lockdownd connections over Wi-Fi.
   memlimitoff                Disable process memory limit.
   mobilegestalt              Query mobilegestalt keys.
   ostrace                    Stream os_trace_relay logs.

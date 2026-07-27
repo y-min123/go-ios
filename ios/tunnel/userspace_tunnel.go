@@ -216,7 +216,7 @@ func connectToUserspaceTunnelLockdown(ctx context.Context, device ios.DeviceEntr
 		return Tunnel{}, fmt.Errorf("could not setup tunnel interface. %w", err)
 	}
 
-	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", ifacePort))
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", ifacePort))
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("could not setup listener. %w", err)
 	}
