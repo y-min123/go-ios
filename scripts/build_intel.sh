@@ -37,7 +37,7 @@ fi
 echo "==> Building ios CLI (x86_64)…"
 # Force external linking so the Mach-O build version comes from the host linker,
 # which honors MACOSX_DEPLOYMENT_TARGET=10.15 on darwin/amd64.
-"${GO_BIN}" build -ldflags="-linkmode=external" -o "${IOS_OUTPUT}" ./main.go
+"${GO_BIN}" build -ldflags="-linkmode=external" -o "${IOS_OUTPUT}" .
 if [[ "${PUBLISH_SINGLE_ARCH_OUTPUT}" == "1" ]]; then
   cp "${IOS_OUTPUT}" "${BUILD_DIR}/ios"
 fi

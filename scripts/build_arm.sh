@@ -34,7 +34,7 @@ cp "${DYLIB_OUTPUT}" "${BUILD_DIR}/libgoios.dylib"
 echo "==> Building ios CLI (arm64)…"
 # Force external linking so the Mach-O build version comes from the host linker,
 # which honors MACOSX_DEPLOYMENT_TARGET=11.0 on darwin/arm64.
-"${GO_BIN}" build -ldflags="-linkmode=external" -o "${IOS_OUTPUT}" ./main.go
+"${GO_BIN}" build -ldflags="-linkmode=external" -o "${IOS_OUTPUT}" .
 cp "${IOS_OUTPUT}" "${BUILD_DIR}/ios"
 
 echo "Artifacts written to ${BUILD_DIR}"
