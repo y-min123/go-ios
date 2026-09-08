@@ -31,6 +31,9 @@ export GOCACHE
 # standalone so GO_BIN can be pinned to Go 1.22.5 without the workspace's
 # `go` directive forcing a toolchain switch or rejecting the older toolchain.
 export GOWORK=off
+# go.mod 的 `toolchain` 只是下限，不加这行的话 GO_BIN 会被静默提升到更新的 Go，
+# 而新版 Go 会让产物引用 macOS 12 才有的 SecTrustCopyCertificateChain
+export GOTOOLCHAIN=local
 
 echo "==> Building libgoios.dylib (x86_64, min macOS 10.15)…"
 "${GO_BIN}" build -buildmode=c-shared -o "${DYLIB_OUTPUT}" ./bridge
