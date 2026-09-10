@@ -99,8 +99,8 @@ Usage:
   ios file pull [--app=<bundleID> | --app-group=<groupID> | --crash | --temp] --remote=<remotePath> --local=<localPath> [options]
   ios file push [--app=<bundleID> | --app-group=<groupID> | --crash | --temp] --local=<localPath> --remote=<remotePath> [options]
   ios forward [options] [<hostPort> <targetPort>] [--port=<mapping>]...
-  ios fsync [--app=bundleId] [options] (pull | push) --srcPath=<srcPath> --dstPath=<dstPath>
-  ios fsync [--app=bundleId] [options] (rm [--r] | tree | mkdir) --path=<targetPath>
+  ios fsync [--app=bundleId] [--documents] [options] (pull | push) --srcPath=<srcPath> --dstPath=<dstPath>
+  ios fsync [--app=bundleId] [--documents] [options] (rm [--r] | tree | mkdir) --path=<targetPath>
   ios httpproxy <host> <port> [<user>] [<pass>] --p12file=<orgid> --password=<p12password> [options]
   ios httpproxy remove [options]
   ios image auto [--basedir=<where_dev_images_are_stored>] [options]
@@ -298,10 +298,15 @@ The commands work as following:
                                                                   Forward TCP connections to device.
                                                                   Use --port for multiple ports: --port=8100:8100 --port=9191:9191
 
-    ios fsync [--app=bundleId] [options] (pull | push) --srcPath=<srcPath> --dstPath=<dstPath>
+    ios fsync [--app=bundleId] [--documents] [options] (pull | push) --srcPath=<srcPath> --dstPath=<dstPath>
                                                                   Pull or Push file from srcPath to dstPath.
+                                                                  --documents vends only the app's Documents directory (VendDocuments) instead of
+                                                                  the whole container (VendContainer). Needed for distribution-signed apps, which
+                                                                  the device rejects with InstallationLookupFailed unless they are signed with
+                                                                  get-task-allow. Requires UIFileSharingEnabled in the app's Info.plist.
+                                                                  Paths keep the "Documents/" prefix either way.
 
-    ios fsync [--app=bundleId] [options] (rm [--r] | tree | mkdir) --path=<targetPath>
+    ios fsync [--app=bundleId] [--documents] [options] (rm [--r] | tree | mkdir) --path=<targetPath>
                                                                   Remove | treeview | mkdir in target path.
                                                                   --r used alongside rm will recursively remove all files and directories from target path.
 
