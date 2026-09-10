@@ -115,6 +115,7 @@ func runInstrumentsCommand(ctx commandContext) {
 }
 
 func runImageCommand(ctx commandContext) {
+	udid := ctx.Device.Properties.SerialNumber
 	if list, _ := ctx.Args.Bool("list"); list {
 		listMountedImages(ctx.Device)
 	}
@@ -127,33 +128,38 @@ func runImageCommand(ctx commandContext) {
 			basedir = "./devimages"
 		}
 
+		// 下载和挂载失败必须以非零退出码结束，否则调用方无法区分成功与失败
 		var err error
 		imagePath, err = imagemounter.DownloadImageFor(ctx.Device, basedir)
 		if err != nil {
-			slog.Error("failed downloading image", "basedir", basedir, "udid", ctx.Device.Properties.SerialNumber, "err", err)
-			return
+			logFatal("failed downloading developer disk image", "basedir", basedir, "udid", udid, "err", err)
 		}
 
-		slog.Info("success downloaded image", "basedir", basedir, "udid", ctx.Device.Properties.SerialNumber)
+		slog.Info("success downloaded developer disk image", "basedir", basedir, "udid", udid, "imagePath", imagePath)
 	}
 
 	mount, _ := ctx.Args.Bool("mount")
 	if mount || auto {
 		err := imagemounter.MountImage(ctx.Device, imagePath)
 		if err != nil {
-			slog.Error("error mounting image", "image", imagePath, "udid", ctx.Device.Properties.SerialNumber, "err", err)
-			return
+			// auto 模式下的镜像是自动下载的缓存，挂载失败可能是缓存内容损坏，
+			// 丢弃后下次连接会重新下载。--path 指定的镜像是用户自己的文件，不能删。
+			if auto {
+				if discardErr := imagemounter.DiscardCachedImage(imagePath); discardErr != nil {
+					slog.Warn("failed discarding cached developer disk image", "imagePath", imagePath, "udid", udid, "err", discardErr)
+				}
+			}
+			logFatal("failed mounting developer disk image", "imagePath", imagePath, "udid", udid, "err", err)
 		}
-		slog.Info("success mounting image", "image", imagePath, "udid", ctx.Device.Properties.SerialNumber)
+		slog.Info("success mounting developer disk image", "imagePath", imagePath, "udid", udid)
 	}
 
 	if unmount, _ := ctx.Args.Bool("unmount"); unmount {
 		err := imagemounter.UnmountImage(ctx.Device)
 		if err != nil {
-			slog.Error("error unmounting image", "udid", ctx.Device.Properties.SerialNumber, "err", err)
-			return
+			logFatal("failed unmounting developer disk image", "udid", udid, "err", err)
 		}
-		slog.Info("success unmounting image", "udid", ctx.Device.Properties.SerialNumber)
+		slog.Info("success unmounting developer disk image", "udid", udid)
 	}
 }
 

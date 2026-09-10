@@ -30,7 +30,15 @@ func newTssClient() tssClient {
 	}
 }
 
-func (t tssClient) getSignature(identity buildIdentity, identifiers personalizationIdentifiers, nonce []byte, ecid uint64) ([]byte, error) {
+// buildSignatureRequest builds the TSS request body for personalizing the developer disk image.
+//
+// EPRO / ESEC 必须是 true，不能取 BuildManifest 里的同名字段。DDI 的 BuildManifest
+// 条目并不直接写 EPRO / ESEC，而是把它们放在 Info.RestoreRequestRules 里，按
+// ApProductionMode / ApSecurityMode 推导；go-ios 这两个值恒为 true，推导结果就恒为 true。
+// 直接读结构体字段的话缺失键会解成 false，TSS 会拒签：EPRO/ESEC 为 false 返回
+// STATUS=94，两个键都不带返回 STATUS=69，两者的 MESSAGE 都是
+// "This device isn't eligible for the requested build."（2026-09-09 在 iPhone18,1 / iOS 26.6 实测）。
+func buildSignatureRequest(identity buildIdentity, identifiers personalizationIdentifiers, nonce []byte, ecid uint64) map[string]interface{} {
 	params := map[string]interface{}{
 		"@ApImg4Ticket":     true,
 		"@BBTicket":         true,
@@ -55,8 +63,8 @@ func (t tssClient) getSignature(identity buildIdentity, identifiers personalizat
 		entryParams := map[string]interface{}{
 			"Digest":  entry.Digest,
 			"Trusted": true,
-			"EPRO":    entry.EPRO,
-			"ESEC":    entry.ESEC,
+			"EPRO":    true,
+			"ESEC":    true,
 		}
 		if key == "PersonalizedDMG" || key == "PersonalizedDmg" {
 			if entry.Name != "" {
@@ -71,6 +79,12 @@ func (t tssClient) getSignature(identity buildIdentity, identifiers personalizat
 	for k, v := range identifiers.AdditionalIdentifiers {
 		params[k] = v
 	}
+
+	return params
+}
+
+func (t tssClient) getSignature(identity buildIdentity, identifiers personalizationIdentifiers, nonce []byte, ecid uint64) ([]byte, error) {
+	params := buildSignatureRequest(identity, identifiers, nonce, ecid)
 
 	buf := bytes.NewBuffer(nil)
 	enc := plist.NewEncoderForFormat(buf, plist.XMLFormat)
@@ -103,7 +117,7 @@ func (t tssClient) getSignature(identity buildIdentity, identifiers personalizat
 			return nil, fmt.Errorf("getSignature: failed to parse response: %w", err)
 		}
 		if resp.status != 0 {
-			return nil, fmt.Errorf("unexpected status in response %d", resp.status)
+			return nil, fmt.Errorf("unexpected status in response %d (%s)", resp.status, resp.message)
 		}
 		var ticket map[string]interface{}
 		_, err = plist.Unmarshal([]byte(resp.requestString), &ticket)

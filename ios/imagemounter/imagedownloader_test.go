@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -23,6 +24,48 @@ func TestVersionMatching(t *testing.T) {
 	assert.Equal(t, "15.4", imagemounter.MatchAvailable("15.4.1"))
 	assert.Equal(t, "15.7", imagemounter.MatchAvailable("15.7.2"))
 	assert.Equal(t, "16.6", imagemounter.MatchAvailable("19.4.1"))
+}
+
+func TestDiscardCachedImageRemovesLegacyVersionDirectory(t *testing.T) {
+	// Arrange
+	baseDir := t.TempDir()
+	versionDir := filepath.Join(baseDir, "15.7")
+	assert.Nil(t, os.MkdirAll(versionDir, 0o755))
+	imagePath := filepath.Join(versionDir, "DeveloperDiskImage.dmg")
+	assert.Nil(t, os.WriteFile(imagePath, []byte("broken"), 0o644))
+	assert.Nil(t, os.WriteFile(imagePath+".signature", []byte("sig"), 0o644))
+
+	// Act
+	err := imagemounter.DiscardCachedImage(imagePath)
+
+	// Assert
+	assert.Nil(t, err)
+	assert.NoDirExists(t, versionDir)
+	assert.DirExists(t, baseDir)
+}
+
+func TestDiscardCachedImageRemovesPersonalizedImageDirectoryAndArchive(t *testing.T) {
+	// Arrange
+	baseDir := t.TempDir()
+	ddiDir := filepath.Join(baseDir, "ddi-17E5179g")
+	assert.Nil(t, os.MkdirAll(filepath.Join(ddiDir, "Restore"), 0o755))
+	archivePath := ddiDir + ".zip"
+	assert.Nil(t, os.WriteFile(archivePath, []byte("zip"), 0o644))
+
+	// Act
+	err := imagemounter.DiscardCachedImage(filepath.Join(ddiDir, "Restore"))
+
+	// Assert
+	assert.Nil(t, err)
+	assert.NoDirExists(t, ddiDir)
+	assert.NoFileExists(t, archivePath)
+	assert.DirExists(t, baseDir)
+}
+
+func TestDiscardCachedImageRefusesSuspiciousPaths(t *testing.T) {
+	assert.Nil(t, imagemounter.DiscardCachedImage(""))
+	assert.Error(t, imagemounter.DiscardCachedImage("/DeveloperDiskImage.dmg"))
+	assert.Error(t, imagemounter.DiscardCachedImage("DeveloperDiskImage.dmg"))
 }
 
 func TestUsesProxy(t *testing.T) {

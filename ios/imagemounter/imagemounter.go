@@ -16,6 +16,23 @@ const serviceName string = "com.apple.mobile.mobile_image_mounter"
 
 const logModule = "go-ios/imagemounter"
 
+// ErrAlreadyMounted is returned when the device rejects a mount because a developer disk image
+// of the same type is already mounted. For `image auto` this is a success, not a failure.
+//
+// 挂载前的 LookupImage 探测靠不住：personalized 镜像即使已经挂着，设备也可能回空列表
+// （Xcode / CoreDevice 自动挂上的那份尤其如此），所以必须同时认设备在 MountImage 时的拒绝理由。
+var ErrAlreadyMounted = errors.New("a developer disk image is already mounted on the device")
+
+// deviceRejection converts a MountImage error response into a Go error, mapping the
+// "already mounted" rejection onto ErrAlreadyMounted.
+func deviceRejection(prefix string, deviceError interface{}, detailedError interface{}) error {
+	err := fmt.Errorf("%s: device rejected the image with error '%v' (detailed error: %v)", prefix, deviceError, detailedError)
+	if detail, ok := detailedError.(string); ok && strings.Contains(detail, "is already mounted at") {
+		return fmt.Errorf("%w: %v", ErrAlreadyMounted, err)
+	}
+	return err
+}
+
 // DeveloperDiskImageMounter to mobile image mounter
 type DeveloperDiskImageMounter struct {
 	deviceConn ios.DeviceConnectionInterface
@@ -120,7 +137,23 @@ func (conn *DeveloperDiskImageMounter) mountImage(signatureBytes []byte) error {
 	golog.Debug("sending", "module", logModule, "request", req)
 	err := conn.plistRw.Write(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("mountImage: failed to write command 'MountImage': %w", err)
+	}
+
+	// 设备会对 MountImage 返回结果。不读取的话，签名不匹配、镜像损坏这类拒绝
+	// 会被完全丢弃，调用方拿到的是一个假的成功。
+	var resp map[string]interface{}
+	err = conn.plistRw.Read(&resp)
+	if err != nil {
+		return fmt.Errorf("mountImage: failed to read response for 'MountImage': %w", err)
+	}
+	golog.Debug("received mount response", "module", logModule, "response", resp)
+
+	if deviceError, ok := resp["Error"]; ok {
+		return deviceRejection("mountImage", deviceError, resp["DetailedError"])
+	}
+	if status, ok := resp["Status"]; ok && status != "Complete" {
+		return fmt.Errorf("mountImage: unexpected status in response: %+v", resp)
 	}
 	return nil
 }
@@ -188,6 +221,7 @@ func hangUp(plistRw ios.PlistCodecReadWriter) error {
 }
 
 func MountImage(device ios.DeviceEntry, path string) error {
+	udid := device.Properties.SerialNumber
 	conn, err := NewImageMounter(device)
 	if err != nil {
 		return fmt.Errorf("failed connecting to image mounter: %v", err)
@@ -199,10 +233,20 @@ func MountImage(device ios.DeviceEntry, path string) error {
 		return fmt.Errorf("failed getting image list: %v", err)
 	}
 	if len(signatures) != 0 {
-		golog.Warn("there is already a developer image mounted, reboot the device if you want to remove it. aborting.", "module", logModule, "udid", device.Properties.SerialNumber, "imagePath", path)
+		golog.Warn("there is already a developer image mounted, reboot the device if you want to remove it. aborting.", "module", logModule, "udid", udid, "imagePath", path)
 		return nil
 	}
-	return conn.MountImage(path)
+
+	golog.Info("mounting developer disk image", "module", logModule, "udid", udid, "imagePath", path)
+	if err := conn.MountImage(path); err != nil {
+		if errors.Is(err, ErrAlreadyMounted) {
+			golog.Warn("the device already has a developer image mounted, nothing to do. reboot the device if you want to replace it.", "module", logModule, "udid", udid, "imagePath", path, "err", err)
+			return nil
+		}
+		return err
+	}
+	golog.Info("developer disk image mounted", "module", logModule, "udid", udid, "imagePath", path)
+	return nil
 }
 
 func UnmountImage(device ios.DeviceEntry) error {
@@ -243,6 +287,11 @@ func listImages(prw ios.PlistCodecReadWriter, imageType string, v *semver.Versio
 	}
 
 	array, ok := signatures.([]interface{})
+	if !ok {
+		// 断言失败时不能静默当成空列表：调用方会据此判断"没有挂载过镜像"，
+		// 于是重复挂载，最后由设备报 already mounted。
+		return nil, fmt.Errorf("listImages: expected 'ImageSignature' to be an array, got %T: %+v", signatures, signatures)
+	}
 	result := make([][]byte, len(array))
 	for i, intf := range array {
 		bytes, ok := intf.([]byte)

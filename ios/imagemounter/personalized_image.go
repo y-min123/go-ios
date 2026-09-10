@@ -10,8 +10,7 @@ import (
 )
 
 type buildManifest struct {
-	ProductBuildVersion string `plist:"ProductBuildVersion"`
-	BuildIdentities     []buildIdentity
+	BuildIdentities []buildIdentity
 }
 
 func loadBuildManifest(p string) (buildManifest, error) {
@@ -38,11 +37,12 @@ func (m buildManifest) findIdentity(identifiers personalizationIdentifiers) (bui
 	return buildIdentity{}, fmt.Errorf("findIdentity: failed to find identity for ApBoardId 0x%x and ApChipId 0x%x", identifiers.BoardId, identifiers.ChipID)
 }
 
+// manifestEntry 是 BuildManifest 里一个可签名组件。
+// 注意这里不解析 EPRO / ESEC：DDI 的 manifest 条目没有这两个键，
+// 它们由 Info.RestoreRequestRules 按 ApProductionMode / ApSecurityMode 推导，见 buildSignatureRequest。
 type manifestEntry struct {
 	Digest  []byte
 	Trusted bool `plist:"Trusted"`
-	EPRO    bool `plist:"EPRO"`
-	ESEC    bool `plist:"ESEC"`
 	Name    string
 	Info    struct {
 		Path string

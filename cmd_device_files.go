@@ -178,10 +178,13 @@ func runFileCommand(ctx commandContext) {
 
 func runFsyncCommand(ctx commandContext) {
 	containerBundleId, _ := ctx.Args.String("--app")
+	documentsOnly, _ := ctx.Args.Bool("--documents")
 	var afcService *afc.Client
 	var err error
 	if containerBundleId == "" {
 		afcService, err = afc.New(ctx.Device)
+	} else if documentsOnly {
+		afcService, err = house_arrest.NewDocuments(ctx.Device, containerBundleId)
 	} else {
 		afcService, err = house_arrest.New(ctx.Device, containerBundleId)
 	}

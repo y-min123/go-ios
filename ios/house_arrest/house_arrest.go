@@ -13,21 +13,40 @@ import (
 
 const serviceName = "com.apple.mobile.house_arrest"
 
+const (
+	commandVendContainer = "VendContainer"
+	commandVendDocuments = "VendDocuments"
+)
+
+// New vends the app's whole data container. The device only permits this for apps
+// signed with get-task-allow (development builds); distribution-signed apps are
+// rejected with InstallationLookupFailed. Use NewDocuments for those.
 func New(device ios.DeviceEntry, bundleID string) (*afc.Client, error) {
+	return newWithCommand(device, bundleID, commandVendContainer)
+}
+
+// NewDocuments vends only the app's Documents directory, which the device permits
+// regardless of signing as long as the app sets UIFileSharingEnabled in its Info.plist.
+// The AFC root stays the container root, so paths keep the "Documents/" prefix.
+func NewDocuments(device ios.DeviceEntry, bundleID string) (*afc.Client, error) {
+	return newWithCommand(device, bundleID, commandVendDocuments)
+}
+
+func newWithCommand(device ios.DeviceEntry, bundleID string, command string) (*afc.Client, error) {
 	deviceConn, err := ios.ConnectToService(device, serviceName)
 	if err != nil {
 		return nil, err
 	}
-	err = vendContainer(deviceConn, bundleID)
+	err = vend(deviceConn, bundleID, command)
 	if err != nil {
 		return nil, err
 	}
 	return afc.NewFromConn(deviceConn), nil
 }
 
-func vendContainer(deviceConn ios.DeviceConnectionInterface, bundleID string) error {
+func vend(deviceConn ios.DeviceConnectionInterface, bundleID string, command string) error {
 	plistCodec := ios.NewPlistCodec()
-	vendContainer := map[string]interface{}{"Command": "VendContainer", "Identifier": bundleID}
+	vendContainer := map[string]interface{}{"Command": command, "Identifier": bundleID}
 	msg, err := plistCodec.Encode(vendContainer)
 	if err != nil {
 		return fmt.Errorf("vendContainer Encoding cannot fail unless the encoder is broken: %v", err)

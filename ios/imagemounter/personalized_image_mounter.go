@@ -2,6 +2,7 @@ package imagemounter
 
 import (
 	"crypto/sha512"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -66,9 +67,12 @@ func (p PersonalizedDeveloperDiskImageMounter) ListImages() ([][]byte, error) {
 // imagePath needs to point to the 'Restore' directory of the personalized developer disk image.
 //
 // MountImage first tries to reuse an existing device-side manifest via QueryPersonalizationManifest
-// to avoid unnecessary Apple TSS requests on re-mounts. If no manifest exists, it falls back
-// to querying a nonce and getting a new signature from Apple's TSS server.
+// to avoid unnecessary Apple TSS requests on re-mounts. If no manifest exists, or if mounting with
+// that manifest fails, it falls back to querying a nonce and getting a new signature from Apple's
+// TSS server.
 func (p PersonalizedDeveloperDiskImageMounter) MountImage(imagePath string) error {
+	udid := p.entry.Properties.SerialNumber
+
 	manifest, err := loadBuildManifest(path.Join(imagePath, "BuildManifest.plist"))
 	if err != nil {
 		return fmt.Errorf("MountImage: failed to load build manifest: %w", err)
@@ -84,30 +88,83 @@ func (p PersonalizedDeveloperDiskImageMounter) MountImage(imagePath string) erro
 		return fmt.Errorf("MountImage: could not find identity for identifiers %+v: %w", identifiers, err)
 	}
 
+	// 键名或结构变化时要给出能直接定位的报错，否则空路径会一路带到 os.Open / os.ReadFile，
+	// 报出来的是"打开目录失败"这种看不出根因的错。
+	if identity.dmgPath() == "" {
+		return fmt.Errorf("MountImage: build manifest has no 'PersonalizedDMG' entry for ApBoardId 0x%x and ApChipId 0x%x", identifiers.BoardId, identifiers.ChipID)
+	}
+	if identity.trustCachePath() == "" {
+		return fmt.Errorf("MountImage: build manifest has no 'LoadableTrustCache' entry for ApBoardId 0x%x and ApChipId 0x%x", identifiers.BoardId, identifiers.ChipID)
+	}
 	dmgPath := path.Join(imagePath, identity.dmgPath())
-
-	signature, err := p.queryPersonalizationManifest(dmgPath)
+	trustCache, err := os.ReadFile(path.Join(imagePath, identity.trustCachePath()))
 	if err != nil {
-		golog.Info("no existing device-side manifest, requesting new signature from Apple TSS", "module", logModule, "udid", p.entry.Properties.SerialNumber, "imagePath", imagePath)
-
-		p, err = p.closeAndReconnect()
-		if err != nil {
-			return fmt.Errorf("MountImage: failed to reconnect after manifest query: %w", err)
-		}
-
-		nonce, err := p.queryPersonalizedImageNonce()
-		if err != nil {
-			return fmt.Errorf("MountImage: failed to get nonce: %w", err)
-		}
-
-		signature, err = p.tss.getSignature(identity, identifiers, nonce, p.ecid)
-		if err != nil {
-			return fmt.Errorf("MountImage: failed to get signature from Apple: %w", err)
-		}
-	} else {
-		golog.Info("reusing existing device-side manifest, skipping Apple TSS", "module", logModule, "udid", p.entry.Properties.SerialNumber, "imagePath", imagePath)
+		return fmt.Errorf("MountImage: could not load trust-cache. %w", err)
 	}
 
+	// 重连出来的连接外层的 defer 认不到（那边只持有最初那一条），这里自己关掉。
+	// closeAndReconnect 会关掉上一条，所以只需要记住最新的一条。
+	var reconnectedConn io.Closer
+	defer func() {
+		if reconnectedConn != nil {
+			_ = reconnectedConn.Close()
+		}
+	}()
+
+	signature, err := p.queryPersonalizationManifest(dmgPath)
+	usedDeviceManifest := err == nil
+	if usedDeviceManifest {
+		golog.Info("reusing existing device-side manifest, skipping Apple TSS", "module", logModule, "udid", udid, "imagePath", imagePath)
+	} else {
+		golog.Info("no existing device-side manifest, requesting new signature from Apple TSS", "module", logModule, "udid", udid, "imagePath", imagePath)
+		p, signature, err = p.signWithTss(identity, identifiers)
+		reconnectedConn = p.deviceConn
+		if err != nil {
+			return err
+		}
+	}
+
+	mountErr := p.uploadAndMount(signature, dmgPath, trustCache)
+	// 已经挂着镜像不是签名问题，重新请签也一样被拒，直接把错误交给上层判定
+	if mountErr == nil || !usedDeviceManifest || errors.Is(mountErr, ErrAlreadyMounted) {
+		return mountErr
+	}
+
+	// 设备端 manifest 可能已经失效（例如设备重启后 nonce 变了）。不回退的话每次连接都会
+	// 拿到同一份坏签名，重下镜像也救不回来，表现是永久失败。
+	golog.Warn("mounting with the device-side manifest failed, retrying with a fresh Apple TSS signature", "module", logModule, "udid", udid, "imagePath", imagePath, "err", mountErr)
+	p, signature, err = p.signWithTss(identity, identifiers)
+	reconnectedConn = p.deviceConn
+	if err != nil {
+		return err
+	}
+	return p.uploadAndMount(signature, dmgPath, trustCache)
+}
+
+// signWithTss reconnects to the image mounter service, queries a fresh nonce and gets a signature
+// from Apple's TSS server. The returned mounter holds the new connection.
+//
+// 必须先重连：设备在一条命令失败之后会把 socket 关掉。
+func (p PersonalizedDeveloperDiskImageMounter) signWithTss(identity buildIdentity, identifiers personalizationIdentifiers) (PersonalizedDeveloperDiskImageMounter, []byte, error) {
+	reconnected, err := p.closeAndReconnect()
+	if err != nil {
+		return reconnected, nil, fmt.Errorf("MountImage: failed to reconnect before requesting a signature: %w", err)
+	}
+
+	nonce, err := reconnected.queryPersonalizedImageNonce()
+	if err != nil {
+		return reconnected, nil, fmt.Errorf("MountImage: failed to get nonce: %w", err)
+	}
+
+	signature, err := reconnected.tss.getSignature(identity, identifiers, nonce, reconnected.ecid)
+	if err != nil {
+		return reconnected, nil, fmt.Errorf("MountImage: failed to get signature from Apple: %w", err)
+	}
+	return reconnected, signature, nil
+}
+
+// uploadAndMount uploads the developer disk image to the device and mounts it with the given signature.
+func (p PersonalizedDeveloperDiskImageMounter) uploadAndMount(signature []byte, dmgPath string, trustCache []byte) error {
 	imageSize, err := getFileSize(dmgPath)
 	if err != nil {
 		return fmt.Errorf("MountImage: %w", err)
@@ -130,11 +187,6 @@ func (p PersonalizedDeveloperDiskImageMounter) MountImage(imagePath string) erro
 	err = waitForUploadComplete(p.plistRw)
 	if err != nil {
 		return err
-	}
-
-	trustCache, err := os.ReadFile(path.Join(imagePath, identity.trustCachePath()))
-	if err != nil {
-		return fmt.Errorf("MountImage: could not load trust-cache. %w", err)
 	}
 
 	err = p.mountPersonalizedImage(signature, trustCache)
@@ -291,10 +343,20 @@ func (p PersonalizedDeveloperDiskImageMounter) mountPersonalizedImage(signatureB
 		return fmt.Errorf("mountPersonalizedImage: failed to write 'MountImage' command: %w", err)
 	}
 
+	// 设备会对 MountImage 回结果。不检查的话，签名不匹配、镜像损坏这类拒绝
+	// 会被当成挂载成功，后续所有依赖 DDI 的功能才报错，根因就查不回来了。
 	var res map[string]interface{}
 	err = p.plistRw.Read(&res)
 	if err != nil {
 		return fmt.Errorf("mountPersonalizedImage: failed to read response for 'MountImage': %w", err)
+	}
+	golog.Debug("received mount response", "module", logModule, "udid", p.entry.Properties.SerialNumber, "response", res)
+
+	if deviceError, ok := res["Error"]; ok {
+		return deviceRejection("mountPersonalizedImage", deviceError, res["DetailedError"])
+	}
+	if status, ok := res["Status"]; ok && status != "Complete" {
+		return fmt.Errorf("mountPersonalizedImage: unexpected status in response: %+v", res)
 	}
 	return nil
 }

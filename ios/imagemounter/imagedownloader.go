@@ -92,10 +92,47 @@ const (
 	imageFile     = "DeveloperDiskImage.dmg"
 	signatureFile = "DeveloperDiskImage.dmg.signature"
 	devicebox     = "https://deviceboxhq.com/"
-	// iOS 17+ universal personalized developer disk image hosted on deviceboxhq.
-	// Bump this when a newer DDI is published there (was ddi-15F31d).
-	xcode15_4_ddi = "ddi-17E5179g"
+	// iOS 17+ 的 personalized DDI，托管在 deviceboxhq。
+	// 一份通吃所有 iOS 17+ 设备：镜像本身不区分系统版本，BuildManifest 覆盖
+	// 0x8010 ~ 0x8150 全部芯片，比上一份 ddi-15F31d 多出 A18 / A19（iPhone 16 / 17）。
+	// 有新版本发布时直接 bump。
+	personalizedDDI = "ddi-17E5179g"
+	// iOS 17+ 的镜像解压后，DownloadImageFor 返回的是这个子目录
+	restoreDirName = "Restore"
 )
+
+// DiscardCachedImage removes the cached developer disk image that imagePath belongs to,
+// so the next run downloads it again. imagePath is what DownloadImageFor returned:
+// a DeveloperDiskImage.dmg file for iOS < 17, or a "Restore" directory for iOS 17+.
+//
+// 用于挂载失败之后。缓存的完整性只能靠"能不能挂上"来判断，
+// 内容损坏但文件齐全的镜像不丢弃的话，后续每次连接都会用同一份坏缓存重复失败。
+func DiscardCachedImage(imagePath string) error {
+	if imagePath == "" {
+		return nil
+	}
+
+	// 两种形态取一次 Dir 都能落到缓存目录：
+	// <baseDir>/15.7/DeveloperDiskImage.dmg -> <baseDir>/15.7
+	// <baseDir>/ddi-17E5179g/Restore        -> <baseDir>/ddi-17E5179g
+	cacheDir := filepath.Dir(imagePath)
+
+	// 兜住异常入参，避免把 baseDir 或其它版本的缓存删掉
+	if cleaned := filepath.Clean(cacheDir); cleaned == "." || cleaned == string(filepath.Separator) {
+		return fmt.Errorf("DiscardCachedImage: refusing to remove suspicious cache directory '%s'", cacheDir)
+	}
+
+	golog.Warn("discarding cached developer disk image, it will be downloaded again on the next run", "module", logModule, "imagePath", imagePath, "path", cacheDir)
+	if err := os.RemoveAll(cacheDir); err != nil {
+		return fmt.Errorf("DiscardCachedImage: failed removing '%s': %w", cacheDir, err)
+	}
+
+	// iOS 17+ 的下载产物还包含与解压目录同名的 zip，一并删除避免留下孤儿文件
+	if err := os.Remove(cacheDir + ".zip"); err != nil && !os.IsNotExist(err) {
+		golog.Warn("failed removing cached developer disk image archive", "module", logModule, "path", cacheDir+".zip", "err", err)
+	}
+	return nil
+}
 
 func MatchAvailable(version string) string {
 	golog.Debug("matching available image for device version", "module", logModule, "version", version)
@@ -124,19 +161,19 @@ func MatchAvailable(version string) string {
 }
 
 func Download17Plus(baseDir string, version *semver.Version) (string, error) {
-	downloadUrl := fmt.Sprintf("%s%s%s", devicebox, xcode15_4_ddi, ".zip")
-	golog.Info("getting developer image", "module", logModule, "version", version.String(), "url", downloadUrl)
+	downloadUrl := fmt.Sprintf("%s%s%s", devicebox, personalizedDDI, ".zip")
+	golog.Info("getting developer image", "module", logModule, "version", version.String(), "ddi", personalizedDDI, "url", downloadUrl)
 
-	imageDownloaded, err := validateBaseDirAndLookForImage(baseDir, xcode15_4_ddi)
+	imageDownloaded, err := validateBaseDirAndLookForImage(baseDir, personalizedDDI)
 	if err != nil {
 		return "", err
 	}
 	if imageDownloaded != "" {
 		golog.Info("using already downloaded image", "module", logModule, "path", imageDownloaded)
-		return path.Join(imageDownloaded, "Restore"), err
+		return path.Join(imageDownloaded, restoreDirName), err
 	}
-	imageFileName := path.Join(baseDir, xcode15_4_ddi+".zip")
-	extractedPath := path.Join(baseDir, xcode15_4_ddi)
+	imageFileName := path.Join(baseDir, personalizedDDI+".zip")
+	extractedPath := path.Join(baseDir, personalizedDDI)
 	golog.Info("downloading image", "module", logModule, "url", downloadUrl, "path", imageFileName)
 	err = downloadFile(imageFileName, downloadUrl)
 	if err != nil {
@@ -147,7 +184,7 @@ func Download17Plus(baseDir string, version *semver.Version) (string, error) {
 		return "", fmt.Errorf("Download17Plus: error extracting image %s %w", imageFileName, err)
 	}
 
-	return path.Join(extractedPath, "Restore"), nil
+	return path.Join(extractedPath, restoreDirName), nil
 }
 
 func DownloadImageFor(device ios.DeviceEntry, baseDir string) (string, error) {
@@ -176,31 +213,40 @@ func DownloadImageFor(device ios.DeviceEntry, baseDir string) (string, error) {
 		return "", err
 	}
 	if imageDownloaded != "" {
-		golog.Info("image already downloaded from https://github.com/mspvirajpatel/", "module", logModule, "udid", device.Properties.SerialNumber, "path", imageDownloaded)
-		return imageDownloaded, nil
+		// findImage 只按文件名匹配，signature 缺失同样会让挂载失败，此时要丢弃缓存重新下载
+		if _, statErr := os.Stat(imageDownloaded + ".signature"); statErr != nil {
+			golog.Warn("cached developer disk image is incomplete, signature file is missing. discarding cache and downloading again", "module", logModule, "udid", device.Properties.SerialNumber, "path", imageDownloaded, "err", statErr)
+			if rmErr := os.Remove(imageDownloaded); rmErr != nil {
+				return "", fmt.Errorf("DownloadImageFor: failed removing incomplete image '%s': %w", imageDownloaded, rmErr)
+			}
+		} else {
+			golog.Info("image already downloaded from https://github.com/mspvirajpatel/", "module", logModule, "udid", device.Properties.SerialNumber, "path", imageDownloaded)
+			return imageDownloaded, nil
+		}
 	}
-	downloadUrl := ""
-	golog.Info("downloading", "module", logModule, "udid", device.Properties.SerialNumber, "url", downloadUrl)
 	golog.Info("thank you github.com/mspvirajpatel for making these images available :-)", "module", logModule, "udid", device.Properties.SerialNumber)
 	versionDir := strings.Split(version, " (")[0]
-	downloadUrl = versionMap[version] + "/" + imageFile + "?raw=true"
+	downloadUrl := versionMap[version] + "/" + imageFile + "?raw=true"
 	imageFileName := path.Join(baseDir, versionDir, imageFile)
 
 	signatureDownloadUrl := versionMap[version] + "/" + signatureFile + "?raw=true"
 	signatureFileName := path.Join(baseDir, versionDir, signatureFile)
-	err = os.Mkdir(path.Join(baseDir, versionDir), 0o755)
+	// 用 MkdirAll 而不是 Mkdir：目录已存在时 Mkdir 会报 EEXIST，
+	// 上一次下载失败留下的空目录会让后续每一次下载都在这里直接失败
+	err = os.MkdirAll(path.Join(baseDir, versionDir), 0o755)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("DownloadImageFor: failed creating image directory '%s': %w", path.Join(baseDir, versionDir), err)
 	}
-	golog.Info("downloading image", "module", logModule, "udid", device.Properties.SerialNumber, "url", downloadUrl, "path", imageFileName)
+	golog.Info("downloading developer disk image", "module", logModule, "udid", device.Properties.SerialNumber, "url", downloadUrl, "path", imageFileName)
 	err = downloadFile(imageFileName, downloadUrl)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("DownloadImageFor: failed downloading image for ios %s: %w", allValues.Value.ProductVersion, err)
 	}
 
+	golog.Info("downloading developer disk image signature", "module", logModule, "udid", device.Properties.SerialNumber, "url", signatureDownloadUrl, "path", signatureFileName)
 	err = downloadFile(signatureFileName, signatureDownloadUrl)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("DownloadImageFor: failed downloading image signature for ios %s: %w", allValues.Value.ProductVersion, err)
 	}
 
 	return imageFileName, nil
@@ -249,6 +295,9 @@ func validateBaseDirAndLookForImage(baseDir string, imageToFind string) (string,
 // DownloadFile will download a url to a local file. It's efficient because it will
 // write as it downloads and not load the whole file into memory.
 // PS: Taken from golangcode.com
+//
+// 下载先落到 .tmp 再重命名。网络中断留下的半截文件如果直接用最终文件名落盘，
+// 后续会被 findImage 按文件名当成有效缓存，导致挂载永久失败。
 func downloadFile(filepath string, url string) error {
 	c := &http.Client{
 		Timeout:   2 * time.Minute,
@@ -257,18 +306,40 @@ func downloadFile(filepath string, url string) error {
 	// Get the data
 	resp, err := c.Get(url)
 	if err != nil {
-		return err
+		return fmt.Errorf("downloadFile: request to '%s' failed: %w", url, err)
 	}
 	defer resp.Body.Close()
 
-	// Create the file
-	out, err := os.Create(filepath)
-	if err != nil {
-		return err
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("downloadFile: unexpected http status %d (%s) for '%s'", resp.StatusCode, resp.Status, url)
 	}
-	defer out.Close()
+
+	tmpPath := filepath + ".tmp"
+	out, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("downloadFile: failed creating '%s': %w", tmpPath, err)
+	}
 
 	// Write the body to file
-	_, err = io.Copy(out, resp.Body)
-	return err
+	written, copyErr := io.Copy(out, resp.Body)
+	closeErr := out.Close()
+	if copyErr != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("downloadFile: failed writing '%s' after %d bytes: %w", tmpPath, written, copyErr)
+	}
+	if closeErr != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("downloadFile: failed closing '%s': %w", tmpPath, closeErr)
+	}
+	if resp.ContentLength > 0 && written != resp.ContentLength {
+		os.Remove(tmpPath)
+		return fmt.Errorf("downloadFile: incomplete download of '%s', got %d bytes but expected %d", url, written, resp.ContentLength)
+	}
+	if err := os.Rename(tmpPath, filepath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("downloadFile: failed moving '%s' to '%s': %w", tmpPath, filepath, err)
+	}
+
+	golog.Info("download completed", "module", logModule, "url", url, "path", filepath, "bytes", written)
+	return nil
 }
