@@ -40,6 +40,13 @@ var (
 	tunnelInfoCacheMu sync.Mutex
 	tunnelInfoCache   = map[string]tunnelInfoCacheEntry{}
 
+	// tunnelInfoPorts 记录每台设备的 tunnel-info 端口（udid -> port）。
+	// 调用方为每台设备各起一个 `ios tunnel start --tunnel-info-port=<port>` agent，
+	// 端口互不相同；不查这张表就只能用默认的 60105，于是只有占住该端口的那台设备
+	// 查得到 tunnel info，其余设备在 iOS 17+ 上一律改不了定位。
+	tunnelInfoPortMu sync.RWMutex
+	tunnelInfoPorts  = map[string]int{}
+
 	deviceVersionCacheMu sync.Mutex
 	deviceVersionCache   = map[string]deviceVersionCacheEntry{}
 
@@ -390,6 +397,63 @@ func GoIOSClearTunnelCache(cUdid *C.char) {
 	clearTunnelCache(udid)
 }
 
+// tunnelInfoPortFor 返回该设备 tunnel agent 的 tunnel-info 端口。
+// 调用方没注册过就回退到默认端口，保持与注册机制引入之前一致的行为。
+func tunnelInfoPortFor(udid string) int {
+	tunnelInfoPortMu.RLock()
+	port, ok := tunnelInfoPorts[udid]
+	tunnelInfoPortMu.RUnlock()
+	if ok && port > 0 {
+		return port
+	}
+	return ios.HttpApiPort()
+}
+
+func setTunnelInfoPort(udid string, port int) {
+	if udid == "" {
+		return
+	}
+	if port <= 0 {
+		clearTunnelInfoPort(udid)
+		return
+	}
+
+	tunnelInfoPortMu.Lock()
+	previous := tunnelInfoPorts[udid]
+	tunnelInfoPorts[udid] = port
+	tunnelInfoPortMu.Unlock()
+
+	if previous == port {
+		return
+	}
+	slog.Info("[TunnelPort] 更新设备的tunnel-info端口", "udid", udid, "port", port, "previous", previous)
+	// 端口换了，旧端口上取回来的 tunnel info 必然失效，留着会让后续请求打到错误的 agent。
+	clearTunnelCache(udid)
+}
+
+func clearTunnelInfoPort(udid string) {
+	if udid == "" {
+		return
+	}
+	tunnelInfoPortMu.Lock()
+	_, existed := tunnelInfoPorts[udid]
+	delete(tunnelInfoPorts, udid)
+	tunnelInfoPortMu.Unlock()
+
+	if !existed {
+		return
+	}
+	slog.Info("[TunnelPort] 清除设备的tunnel-info端口", "udid", udid)
+	clearTunnelCache(udid)
+}
+
+//export GoIOSSetTunnelInfoPort
+func GoIOSSetTunnelInfoPort(cUdid *C.char, port C.int) {
+	udid := C.GoString(cUdid)
+	slog.Info("[TunnelPort] 收到设置tunnel-info端口请求", "udid", udid, "port", int(port))
+	setTunnelInfoPort(udid, int(port))
+}
+
 func getDeviceMajorVersion(device ios.DeviceEntry) (int, bool) {
 	udid := device.Properties.SerialNumber
 	if udid == "" {
@@ -463,10 +527,11 @@ func prepareDevice(rawUdid string) (ios.DeviceEntry, error) {
 		return ios.DeviceEntry{}, fmt.Errorf("tunnel info unavailable and device version unknown")
 	}
 
-	slog.Info("[PrepareDevice] 尝试获取tunnel info", "udid", device.Properties.SerialNumber)
-	info, err := tunnel.TunnelInfoForDevice(device.Properties.SerialNumber, ios.HttpApiHost(), ios.HttpApiPort())
+	tunnelInfoPort := tunnelInfoPortFor(device.Properties.SerialNumber)
+	slog.Info("[PrepareDevice] 尝试获取tunnel info", "udid", device.Properties.SerialNumber, "port", tunnelInfoPort)
+	info, err := tunnel.TunnelInfoForDevice(device.Properties.SerialNumber, ios.HttpApiHost(), tunnelInfoPort)
 	if err != nil {
-		slog.Error("[PrepareDevice] 获取tunnel info失败", "udid", device.Properties.SerialNumber, "error", err)
+		slog.Error("[PrepareDevice] 获取tunnel info失败", "udid", device.Properties.SerialNumber, "port", tunnelInfoPort, "error", err)
 		markTunnelInfoFailure(device.Properties.SerialNumber)
 		if major, ok := getDeviceMajorVersion(device); ok {
 			if major >= 17 {
@@ -477,7 +542,7 @@ func prepareDevice(rawUdid string) (ios.DeviceEntry, error) {
 		return ios.DeviceEntry{}, fmt.Errorf("tunnel info unavailable and device version unknown")
 	}
 
-	slog.Info("[PrepareDevice] 获取tunnel info成功", "udid", device.Properties.SerialNumber)
+	slog.Info("[PrepareDevice] 获取tunnel info成功", "udid", device.Properties.SerialNumber, "port", tunnelInfoPort)
 	markTunnelInfoSuccess(device.Properties.SerialNumber, info)
 	device.UserspaceTUN = info.UserspaceTUN
 	device.UserspaceTUNHost = ios.HttpApiHost()
