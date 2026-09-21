@@ -33,6 +33,36 @@ func deviceRejection(prefix string, deviceError interface{}, detailedError inter
 	return err
 }
 
+// requiredDeveloperServices 是挂载 DDI 想要换来的服务。它们已经在了，挂载就没有必要。
+//
+// 注意这里问的**不是**"DDI 挂没挂上"。那个问题在新机型上既问不出来、也不是我们关心的：
+//   - ApChipID 0x8160 起（iPhone 18 Pro）的镜像由 cryptexd 以 cryptex 形式安装，
+//     `LookupImage{ImageType:"Personalized"}` 查不到它；
+//   - dtservicehub 由 instruments 提供，**没有 DDI 也在**。真机实测：卸载 cryptex DDI
+//     并重启后，`com.apple.coredevice.*` 整族消失、dtservicehub 仍在，改定位照常成功。
+//
+// 所以判据是"需要的服务在不在"。将来要用 `com.apple.coredevice.*`（debugserver、
+// appservice 等）或 `dt.testmanagerd.remote` 的功能时，这个判定代表不了它们可用，得另外确认。
+var requiredDeveloperServices = []string{
+	"com.apple.instruments.dtservicehub",
+}
+
+// AreDeveloperServicesAvailable reports whether the device already exposes the services that
+// mounting a developer disk image is meant to provide. It always returns false without an RSD tunnel.
+func AreDeveloperServicesAvailable(device ios.DeviceEntry) bool {
+	if !device.SupportsRsd() {
+		return false
+	}
+	services := device.Rsd.GetServices()
+	for _, name := range requiredDeveloperServices {
+		if _, ok := services[name]; ok {
+			golog.Debug("required developer service is available", "module", logModule, "udid", device.Properties.SerialNumber, "service", name)
+			return true
+		}
+	}
+	return false
+}
+
 // DeveloperDiskImageMounter to mobile image mounter
 type DeveloperDiskImageMounter struct {
 	deviceConn ios.DeviceConnectionInterface

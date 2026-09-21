@@ -92,6 +92,9 @@ func needsAutomaticTunnelInfo(args docopt.Opts) bool {
 	for _, commandName := range []string{
 		"debug",
 		"devicestate",
+		// image auto 要先看 RSD 服务表判断 DDI 是否已经可用（cryptex 装的镜像 LookupImage 查不到），
+		// 没有隧道信息就拿不到服务表，只能退回去下载挂载
+		"image",
 		"instruments",
 		"kill",
 		"launch",

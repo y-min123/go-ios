@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -122,6 +123,14 @@ func runImageCommand(ctx commandContext) {
 
 	imagePath, _ := ctx.Args.String("--path")
 	auto, _ := ctx.Args.Bool("auto")
+
+	// 需要的开发者服务已经在了就别再下再挂了。ApChipID 0x8160 起的机型根本挂不上
+	// （镜像走 cryptex，go-ios 未实现），但那些机型上这些服务本来就在，挂载是多余的。
+	if auto && imagemounter.AreDeveloperServicesAvailable(ctx.Device) {
+		slog.Info("required developer services are already available, skipping mount", "udid", udid)
+		return
+	}
+
 	if auto {
 		basedir, _ := ctx.Args.String("--basedir")
 		if basedir == "" {
@@ -142,12 +151,18 @@ func runImageCommand(ctx commandContext) {
 	if mount || auto {
 		err := imagemounter.MountImage(ctx.Device, imagePath)
 		if err != nil {
+			unsupportedDevice := errors.Is(err, imagemounter.ErrDeviceNotInManifest)
+
 			// auto 模式下的镜像是自动下载的缓存，挂载失败可能是缓存内容损坏，
 			// 丢弃后下次连接会重新下载。--path 指定的镜像是用户自己的文件，不能删。
-			if auto {
+			// 但"镜像不含本机芯片"和缓存完整性无关，重下同一份只会白费一次下载，必须排除。
+			if auto && !unsupportedDevice {
 				if discardErr := imagemounter.DiscardCachedImage(imagePath); discardErr != nil {
 					slog.Warn("failed discarding cached developer disk image", "imagePath", imagePath, "udid", udid, "err", discardErr)
 				}
+			}
+			if unsupportedDevice {
+				logFatal("this device's chip is not in the developer disk image; devices from ApChipID 0x8160 on use a cryptex image, which go-ios cannot install", "imagePath", imagePath, "udid", udid, "err", err)
 			}
 			logFatal("failed mounting developer disk image", "imagePath", imagePath, "udid", udid, "err", err)
 		}

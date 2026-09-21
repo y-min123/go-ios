@@ -1,6 +1,7 @@
 package imagemounter
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -8,6 +9,12 @@ import (
 
 	"howett.net/plist"
 )
+
+// ErrDeviceNotInManifest 表示这份 DDI 的 BuildManifest 里没有该设备芯片的条目。
+// ApChipID 0x8160 起（iPhone 18 Pro）的机型镜像改走 cryptex，Apple 不会再把它们加进
+// per-chip 清单，所以这种失败重下多少次都一样。调用方靠它把这种情况和"缓存损坏"区分开，
+// 避免每次连接白下一份 11MB 的镜像。
+var ErrDeviceNotInManifest = errors.New("device is not covered by this developer disk image")
 
 type buildManifest struct {
 	BuildIdentities []buildIdentity
@@ -34,7 +41,7 @@ func (m buildManifest) findIdentity(identifiers personalizationIdentifiers) (bui
 			return i, nil
 		}
 	}
-	return buildIdentity{}, fmt.Errorf("findIdentity: failed to find identity for ApBoardId 0x%x and ApChipId 0x%x", identifiers.BoardId, identifiers.ChipID)
+	return buildIdentity{}, fmt.Errorf("findIdentity: failed to find identity for ApBoardId 0x%x and ApChipId 0x%x: %w", identifiers.BoardId, identifiers.ChipID, ErrDeviceNotInManifest)
 }
 
 // manifestEntry 是 BuildManifest 里一个可签名组件。
