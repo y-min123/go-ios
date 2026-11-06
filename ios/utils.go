@@ -117,17 +117,18 @@ func GetDeviceWithAddress(udid string, address string, provider RsdPortProvider)
 	if err != nil {
 		return DeviceEntry{}, err
 	}
+	devices := PreferUSBEntries(deviceList.DeviceList)
 	if udid == "" {
-		if len(deviceList.DeviceList) == 0 {
+		if len(devices) == 0 {
 			return DeviceEntry{}, errors.New("no iOS devices are attached to this host")
 		}
-		device := deviceList.DeviceList[0]
+		device := devices[0]
 		golog.Info("no udid specified using first device in list", "module", logModule, "udid", device.Properties.SerialNumber)
 		device.Address = address
 		device.Rsd = provider
 		return device, nil
 	}
-	for _, device := range deviceList.DeviceList {
+	for _, device := range devices {
 		if device.Properties.SerialNumber == udid {
 			device.Address = address
 			device.Rsd = provider

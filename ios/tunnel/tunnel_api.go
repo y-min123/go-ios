@@ -433,20 +433,33 @@ func (m *TunnelManager) UpdateTunnels(ctx context.Context) error {
 		currentUDIDs[d.Properties.SerialNumber] = true
 	}
 
-	for _, d := range devices.DeviceList {
+	// 同一设备插线又连 Wi-Fi 时只按 USB 那条建隧道
+	for _, d := range ios.PreferUSBEntries(devices.DeviceList) {
 		udid := d.Properties.SerialNumber
 		if m.udidFilter != "" && udid != m.udidFilter {
 			continue
 		}
-		if _, exists := localTunnels[udid]; exists {
+		existing, exists := localTunnels[udid]
+		// 数据面自行断开的隧道虽然还在 map 里、通道也没变，但监听已关、不可用，必须重建。
+		if exists && existing.connectionType == d.Properties.ConnectionType && !existing.isDataPlaneDown() {
 			continue
 		}
-		// Skip network devices (they can't tunnel) and devices still inside their
-		// failure backoff window. Either way, attempting a tunnel here would open
-		// a usbmux socket (via GetProductVersion) that, for a device that always
-		// fails, accumulates as a leaked socket every cycle.
+		// Skip devices still inside their failure backoff window: attempting a
+		// tunnel here would open a usbmux socket (via GetProductVersion) that, for
+		// a device that always fails, accumulates as a leaked socket every cycle.
 		if shouldSkipDevice(d, localFailed, time.Now()) {
 			continue
+		}
+		// 插线时从 Wi-Fi 切到 USB，拔线时从 USB 切到 Wi-Fi；旧隧道所在通道已不是首选或已断开。
+		// 另一种情况：通道没变但数据面已自行断开，同样停掉旧隧道后重建。
+		if exists {
+			if existing.isDataPlaneDown() {
+				golog.Info("rebuilding tunnel after data plane died", "module", logModule, "udid", udid)
+			} else {
+				golog.Info("switching tunnel connection", "module", logModule, "udid", udid, "from", existing.connectionType, "to", d.Properties.ConnectionType)
+			}
+			_ = m.stopTunnel(existing)
+			delete(localTunnels, udid)
 		}
 		if m.userspaceTUN && d.UserspaceTUNPort == 0 {
 			d.UserspaceTUNPort = m.basePort + m.portOffset
@@ -460,6 +473,7 @@ func (m *TunnelManager) UpdateTunnels(ctx context.Context) error {
 			m.mux.Unlock()
 			continue
 		}
+		t.connectionType = d.Properties.ConnectionType
 		m.mux.Lock()
 		delete(m.failedDevices, udid)
 		localTunnels[udid] = t
@@ -486,12 +500,10 @@ func (m *TunnelManager) UpdateTunnels(ctx context.Context) error {
 }
 
 // shouldSkipDevice reports whether UpdateTunnels should not attempt a tunnel for
-// d on this cycle: network-connected devices can never establish a tunnel, and a
-// device that recently failed is held off until its backoff window elapses.
+// d on this cycle: a device that recently failed is held off until its backoff
+// window elapses. Network devices are attempted too: Wi-Fi tunnels worked before
+// upstream #682 started skipping them.
 func shouldSkipDevice(d ios.DeviceEntry, failed map[string]failedDevice, now time.Time) bool {
-	if d.Properties.ConnectionType == "Network" {
-		return true
-	}
 	if f, ok := failed[d.Properties.SerialNumber]; ok && now.Sub(f.lastAttempt) < failedDeviceBackoff(f.failCount) {
 		return true
 	}

@@ -14,6 +14,7 @@ import (
 	"io"
 	"math/big"
 	"os/exec"
+	"sync/atomic"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios"
@@ -36,12 +37,23 @@ type Tunnel struct {
 	// Userspace TUN device is used, connect to the local tcp port at Default
 	UserspaceTUN     bool `json:"userspaceTun"`
 	UserspaceTUNPort int  `json:"userspaceTunPort"`
-	closer           func() error
+	// connectionType 记录建隧道时用的 usbmuxd 通道（"USB" / "Network"），通道变化时 UpdateTunnels 据此重建
+	connectionType string
+	closer         func() error
+	// dataPlaneDown 由 userspace 隧道的 teardown goroutine 在设备侧数据面自行断开时置位。
+	// 此时监听端口已被关闭、客户端连接必然被拒，TunnelManager 据此把隧道当作已死并重建。
+	// 没有 userspace 数据面的隧道（如内核隧道）该字段为 nil，视为存活。
+	dataPlaneDown *atomic.Bool
 }
 
 // Close closes the connection to the device and removes the virtual network interface from the host
 func (t Tunnel) Close() error {
 	return t.closer()
+}
+
+// isDataPlaneDown 报告该隧道的 userspace 数据面是否已自行断开。
+func (t Tunnel) isDataPlaneDown() bool {
+	return t.dataPlaneDown != nil && t.dataPlaneDown.Load()
 }
 
 // ManualPairAndConnectToTunnel tries to verify an existing pairing, and if this fails it triggers a new manual pairing process.

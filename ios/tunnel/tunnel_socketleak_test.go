@@ -54,7 +54,7 @@ func TestShouldSkipDevice(t *testing.T) {
 		name, udid, conn string
 		want             bool
 	}{
-		{"network always skipped", "net", "Network", true},
+		{"fresh network attempted", "net", "Network", false},
 		{"fresh usb attempted", "fresh", "USB", false},
 		{"recent failure backed off", "recent", "USB", true},
 		{"stale failure retried", "stale", "USB", false},
@@ -68,19 +68,44 @@ func TestShouldSkipDevice(t *testing.T) {
 	}
 }
 
-// A network device can never tunnel, so UpdateTunnels must never attempt one —
-// proven by it leaving no failedDevices entry (an attempt would record a
-// failure) and creating no tunnel.
-func TestUpdateTunnelsSkipsNetworkDevices(t *testing.T) {
+// 纯 Wi-Fi 设备也要尝试建隧道（CI 上没有真实设备，尝试必然失败并记入 failedDevices）。
+func TestUpdateTunnelsAttemptsNetworkDevices(t *testing.T) {
 	tm := leakTestManager(devEntry("net-1", "Network"))
 	if err := tm.UpdateTunnels(context.Background()); err != nil {
 		t.Fatalf("UpdateTunnels: %v", err)
 	}
-	if len(tm.failedDevices) != 0 {
-		t.Fatalf("network device must not be attempted; failedDevices=%v", tm.failedDevices)
+	got, ok := tm.failedDevices["net-1"]
+	if !ok || got.failCount != 1 {
+		t.Fatalf("network device should be attempted and recorded with failCount=1, got ok=%v entry=%+v", ok, got)
 	}
-	if len(tm.tunnels) != 0 {
-		t.Fatalf("no tunnel expected for network device; tunnels=%v", tm.tunnels)
+}
+
+// 已有 Wi-Fi 隧道时插上 USB：旧隧道关闭，改用 USB 重建。
+func TestUpdateTunnelsSwitchesToUSB(t *testing.T) {
+	tm := leakTestManager(devEntry("dev-1", "Network"), devEntry("dev-1", "USB"))
+	closed := false
+	tm.tunnels["dev-1"] = Tunnel{Udid: "dev-1", connectionType: "Network", closer: func() error { closed = true; return nil }}
+	if err := tm.UpdateTunnels(context.Background()); err != nil {
+		t.Fatalf("UpdateTunnels: %v", err)
+	}
+	if !closed {
+		t.Fatal("Wi-Fi tunnel should be closed once USB is available")
+	}
+	if _, ok := tm.failedDevices["dev-1"]; !ok {
+		t.Fatal("USB tunnel should be attempted after closing the Wi-Fi tunnel")
+	}
+}
+
+// 已有 USB 隧道且 USB 仍在：即使同时列出 Wi-Fi 也保持不动。
+func TestUpdateTunnelsKeepsUSBTunnel(t *testing.T) {
+	tm := leakTestManager(devEntry("dev-1", "Network"), devEntry("dev-1", "USB"))
+	closed := false
+	tm.tunnels["dev-1"] = Tunnel{Udid: "dev-1", connectionType: "USB", closer: func() error { closed = true; return nil }}
+	if err := tm.UpdateTunnels(context.Background()); err != nil {
+		t.Fatalf("UpdateTunnels: %v", err)
+	}
+	if closed || len(tm.failedDevices) != 0 {
+		t.Fatalf("USB tunnel must be kept; closed=%v failedDevices=%v", closed, tm.failedDevices)
 	}
 }
 

@@ -205,6 +205,27 @@ func TestTunnelManagerConcurrentAccess(t *testing.T) {
 	}
 }
 
+// TestTunnelIsDataPlaneDown guards the flag UpdateTunnels uses to tell a live
+// userspace tunnel from one whose data plane tore itself down: a nil flag
+// (kernel tunnels) must read as alive, and only an explicitly set flag as dead.
+func TestTunnelIsDataPlaneDown(t *testing.T) {
+	var nilFlag Tunnel
+	if nilFlag.isDataPlaneDown() {
+		t.Fatalf("tunnel with nil dataPlaneDown should be treated as alive")
+	}
+
+	alive := Tunnel{dataPlaneDown: &atomic.Bool{}}
+	if alive.isDataPlaneDown() {
+		t.Fatalf("tunnel with unset dataPlaneDown should be alive")
+	}
+
+	dead := Tunnel{dataPlaneDown: &atomic.Bool{}}
+	dead.dataPlaneDown.Store(true)
+	if !dead.isDataPlaneDown() {
+		t.Fatalf("tunnel with dataPlaneDown set should be dead")
+	}
+}
+
 func tunnelManagerWithTunnels(tunnels map[string]Tunnel) *TunnelManager {
 	if tunnels == nil {
 		tunnels = map[string]Tunnel{}

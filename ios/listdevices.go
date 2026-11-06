@@ -93,6 +93,31 @@ func (device DeviceEntry) ConnectionTypeLabel() string {
 	return "unknown"
 }
 
+// IsNetwork 表示 usbmuxd 经 Wi-Fi 连接该设备。
+func (device DeviceEntry) IsNetwork() bool {
+	return strings.EqualFold(device.Properties.ConnectionType, "Network")
+}
+
+// PreferUSBEntries 按 UDID 去重：同一台设备同时插线和连 Wi-Fi 时 usbmuxd 会列出两条，保留 USB 那条。
+// 结果按各 UDID 首次出现的顺序排列。
+func PreferUSBEntries(entries []DeviceEntry) []DeviceEntry {
+	result := make([]DeviceEntry, 0, len(entries))
+	indexByUdid := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		udid := entry.Properties.SerialNumber
+		i, seen := indexByUdid[udid]
+		if !seen {
+			indexByUdid[udid] = len(result)
+			result = append(result, entry)
+			continue
+		}
+		if result[i].IsNetwork() && !entry.IsNetwork() {
+			result[i] = entry
+		}
+	}
+	return result
+}
+
 // SupportsRsd checks if the device supports RSD (Remote Service Discovery).
 // It returns true if the device has RSD capability, otherwise false.
 func (device *DeviceEntry) SupportsRsd() bool {

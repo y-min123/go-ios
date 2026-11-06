@@ -26,3 +26,20 @@ func TestStringConversion(t *testing.T) {
 		assert.Equal(t, tc.expectedOutput, actual)
 	}
 }
+
+func TestPreferUSBEntries(t *testing.T) {
+	entry := func(id int, udid, conn string) ios.DeviceEntry {
+		return ios.DeviceEntry{DeviceID: id, Properties: ios.DeviceProperties{SerialNumber: udid, ConnectionType: conn}}
+	}
+	got := ios.PreferUSBEntries([]ios.DeviceEntry{
+		entry(1, "both", "Network"),
+		entry(2, "wifi-only", "Network"),
+		entry(3, "both", "USB"),
+		entry(4, "usb-only", "USB"),
+	})
+	assert.Equal(t, []ios.DeviceEntry{
+		entry(3, "both", "USB"),
+		entry(2, "wifi-only", "Network"),
+		entry(4, "usb-only", "USB"),
+	}, got)
+}

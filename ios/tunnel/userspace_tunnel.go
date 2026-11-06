@@ -225,6 +225,7 @@ func connectToUserspaceTunnelLockdown(ctx context.Context, device ios.DeviceEntr
 
 	var closeOnce sync.Once
 	var explicitClose atomic.Bool
+	dataPlaneDown := &atomic.Bool{}
 	statsDone := make(chan struct{})
 	doClose := func() error {
 		var err error
@@ -248,13 +249,16 @@ func connectToUserspaceTunnelLockdown(ctx context.Context, device ios.DeviceEntr
 	// If the data plane dies on its own (e.g. a fatal read error in the inbound
 	// dispatch loop, which also stops the outbound loop), tear the tunnel down so
 	// client connections fail fast instead of hanging forever against a half-dead
-	// tunnel whose listener still accepts. Auto-recreation is the TunnelManager's
-	// job once the tunnel is gone.
+	// tunnel whose listener still accepts. Marking dataPlaneDown lets the
+	// TunnelManager recognise the dead tunnel and rebuild it on its next cycle;
+	// without that flag UpdateTunnels keeps the stale entry (same device, same
+	// connection type) and never recreates it.
 	go func() {
 		iface.endpoint.Wait()
 		if explicitClose.Load() {
 			return
 		}
+		dataPlaneDown.Store(true)
 		golog.Error("userspace tunnel data plane stopped unexpectedly, tearing down tunnel", "module", logModule, "udid", device.Properties.SerialNumber)
 		_ = doClose()
 	}()
@@ -264,10 +268,11 @@ func connectToUserspaceTunnelLockdown(ctx context.Context, device ios.DeviceEntr
 		return doClose()
 	}
 	return Tunnel{
-		Address: tunnelInfo.ServerAddress,
-		RsdPort: int(tunnelInfo.ServerRSDPort),
-		Udid:    device.Properties.SerialNumber,
-		closer:  closeFunc,
+		Address:       tunnelInfo.ServerAddress,
+		RsdPort:       int(tunnelInfo.ServerRSDPort),
+		Udid:          device.Properties.SerialNumber,
+		closer:        closeFunc,
+		dataPlaneDown: dataPlaneDown,
 	}, nil
 }
 
